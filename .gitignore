@@ -3,7 +3,7 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 .idea/
-# model weights / HF cache (too big for GitHub)
+# model weights / HF cache
 *.safetensors
 *.ckpt
 models/
