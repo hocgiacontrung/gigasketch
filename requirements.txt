@@ -1,0 +1,7 @@
+diffusers
+transformers
+accelerate
+controlnet_aux
+opencv-python
+pillow
+gradio
