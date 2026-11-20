@@ -2,7 +2,10 @@
 GigaSketch - turn a rough sketch into an image with Stable Diffusion 1.5 + ControlNet (Scribble).
 
 Usage (from the repo root):
-    python src/generate.py --sketch sketches/meme2.jpg --prompt "two men in a photo studio"
+    python src/generate.py --sketch sketches/meme2.jpg --prompt "man slapping another man" --style gigachad
+
+The final prompt is built from a template: "{your content}, {style preset}, {quality tags}".
+--prompt only needs to say WHAT is in the sketch (subjects + action); the style comes from --style.
 """
 
 import argparse
@@ -17,10 +20,46 @@ from diffusers import ControlNetModel, StableDiffusionControlNetPipeline, UniPCM
 SD_MODEL = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 CONTROLNET_MODEL = "lllyasviel/control_v11p_sd15_scribble"
 
-DEFAULT_NEGATIVE = (
+# ---------------------------------------------------------------------------
+# 0. Prompt template: user content + style preset + quality tags
+# ---------------------------------------------------------------------------
+QUALITY_TAGS = "highly detailed, sharp focus, best quality"
+
+BASE_NEGATIVE = (
     "blurry, low quality, deformed, disfigured, bad anatomy, extra limbs, "
     "extra fingers, mutated hands, watermark, text"
 )
+
+# Each preset = (style description, extra negative terms).
+# Keep them short: CLIP truncates prompts after 77 tokens.
+STYLES = {
+    "gigachad": (
+        "extremely muscular man, chiseled jawline, sharp cheekbones, confident expression, "
+        "black and white photo, dramatic studio lighting, high contrast",
+        "skinny, chubby, cartoon, drawing",
+    ),
+    "photo": (
+        "realistic photo, natural lighting, 35mm, depth of field",
+        "cartoon, drawing, painting, anime",
+    ),
+    "anime": (
+        "anime style, cel shading, vibrant colors, clean lineart",
+        "photo, realistic, 3d render",
+    ),
+    "comic": (
+        "comic book style, bold ink outlines, halftone shading, dynamic",
+        "photo, realistic, 3d render",
+    ),
+    "none": ("", ""),  # raw prompt, only quality tags added
+}
+
+
+def build_prompt(content: str, style: str) -> tuple[str, str]:
+    """Returns (prompt, negative_prompt) for the given user content and style preset."""
+    style_text, style_negative = STYLES[style]
+    prompt = ", ".join(part for part in (content.strip(), style_text, QUALITY_TAGS) if part)
+    negative = ", ".join(part for part in (BASE_NEGATIVE, style_negative) if part)
+    return prompt, negative
 
 
 # ---------------------------------------------------------------------------
@@ -83,22 +122,29 @@ def side_by_side(*images: Image.Image) -> Image.Image:
 def main():
     p = argparse.ArgumentParser(description="Sketch -> image with SD 1.5 + ControlNet Scribble")
     p.add_argument("--sketch", required=True, type=Path)
-    p.add_argument("--prompt", required=True)
-    p.add_argument("--negative", default=DEFAULT_NEGATIVE)
+    p.add_argument("--prompt", required=True, help="what is in the sketch, e.g. 'man slapping another man'")
+    p.add_argument("--style", default="gigachad", choices=STYLES, help="style preset added to the prompt")
+    p.add_argument("--negative", default=None, help="override the negative prompt entirely")
     p.add_argument("--scale", type=float, default=1.0, help="ControlNet strength (sketch adherence)")
     p.add_argument("--guidance", type=float, default=7.5, help="CFG scale (prompt adherence)")
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--out", type=Path, default=Path("outputs"))
+    p.add_argument("--out", type=Path, default=Path("outputs"), help="results go to <out>/<sketch name>/")
     args = p.parse_args()
+
+    prompt, negative = build_prompt(args.prompt, args.style)
+    if args.negative is not None:
+        negative = args.negative
+    print(f"Prompt:   {prompt}")
+    print(f"Negative: {negative}")
 
     original, control = prepare_sketch(args.sketch)
     pipe = load_pipeline()
 
     generator = torch.Generator("cuda").manual_seed(args.seed)
     result = pipe(
-        prompt=args.prompt,
-        negative_prompt=args.negative,
+        prompt=prompt,
+        negative_prompt=negative,
         image=control,
         controlnet_conditioning_scale=args.scale,
         guidance_scale=args.guidance,
@@ -108,11 +154,12 @@ def main():
         height=control.height,
     ).images[0]
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    name = f"{args.sketch.stem}_s{args.scale}_g{args.guidance}_seed{args.seed}"
-    result.save(args.out / f"{name}.png")
-    side_by_side(original, control, result).save(args.out / f"{name}_compare.png")
-    print(f"Saved -> {args.out / name}.png (+ _compare.png)")
+    out_dir = args.out / args.sketch.stem  # one folder per sketch, e.g. outputs/m1/
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{args.sketch.stem}_{args.style}_s{args.scale}_g{args.guidance}_seed{args.seed}"
+    result.save(out_dir / f"{name}.png")
+    side_by_side(original, control, result).save(out_dir / f"{name}_compare.png")
+    print(f"Saved -> {out_dir / name}.png (+ _compare.png)")
 
 
 if __name__ == "__main__":
