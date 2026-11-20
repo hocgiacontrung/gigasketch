@@ -41,8 +41,8 @@ text prompt  ──► template: content + style preset + quality tags ───
 With ControlNet active for the whole run, the pose is followed closely, but SD often draws the heads literally as
 round objects (helmets, bowls, glass spheres). Stable Diffusion decides large shapes in the early steps and details
 in the late steps, so stopping ControlNet early leaves the last steps free to draw real faces, at the cost of a
-looser pose. 0.4 is the default because it is the highest value where the heads reliably become faces; use a
-higher value (e.g. 0.5 or 1.0) when the pose matters more (see [Experiments](#experiments)).
+looser pose. 0.4 is the default because it is the highest value where the heads reliably become faces; set a
+higher value (e.g. `--cn-end 0.5` or `1.0`) when the pose matters more (see [Experiments](#experiments)).
 
 ## Setup
 
@@ -94,7 +94,7 @@ All with the default settings (gigachad, scale 1.0, cn-end 0.4, guidance 7.5, 20
 | m2 | `man slapping another man` |
 | m3 | `two men, one sitting on the ground resting his cheek on his hand looking bored, the other leaning toward him laughing excitedly with fists clenched` |
 | m4 | `two men fighting, one throwing a punch to the face of the other man who recoils in pain` |
-| m5 | `two men, one jumping and holding a basketball over his head with an excited grin, the other standing with arms crossed looking at him` |
+| m5 | `two men, one jumping and holding a basketball over his head as if about to dunk on the other man, with an excited grin, the other standing with arms crossed looking at him` |
 | m6 | `three men and one woman striking cool confident poses, a man with spiky hair and arms crossed, a woman with a ponytail, a man adjusting his glasses, a man crouching in front` |
 
 ```bash
@@ -125,7 +125,8 @@ Each row: original sketch | control map | seeds 42, 43, 44, 45.
 
 ## Experiments
 
-All runs are kept in `outputs/<sketch>/`; the settings are in the file names.
+`outputs/` only keeps the final results (default settings). The images of the experiments below (scale 1.3,
+cn-end sweeps, ...) are in the git history, commit `d67a549`.
 
 1. **ControlNet scale (1.0 vs 1.3).** 1.3 was worse on every sketch: following the lines more strictly makes
    cartoon features (round heads, dot eyes) turn into objects even more. 1.0 is the default.
@@ -137,14 +138,9 @@ All runs are kept in `outputs/<sketch>/`; the settings are in the file names.
    0.4. At 0.4 the heads become real faces (m3, m6), but pose details are lost (m3's hand on the cheek and kicked
    leg, m4's recoiling victim turns away). There is no single best value per sketch: m4 looks best at 0.5, m6 only
    works at 0.4, m1 and m5 work everywhere. The helmets at high cn-end also depend on the seed (for m3 at 1.0, only
-   seed 42 of 42–45 gave helmets). So cn-end is a **trade-off between pose and face preservation**.
-
-   ![m3 cn-end sweep](outputs/m3/m3_gigachad_s1.0_e1.0-0.8-0.7-0.6-0.5-0.4_g7.5_seed42_cnsweep.png)
-
-   m3 at `--cn-end 1.0` over 4 seeds: only seed 42 turns the heads into helmets; the others keep real heads and
-   the pose is closer to the sketch than at 0.4.
-
-   ![m3 cn-end 1.0 seeds](outputs/m3/m3_gigachad_s1.0_e1.0_g7.5_seeds42-43-44-45_grid.png)
+   seed 42 of 42–45 gave helmets, and the other seeds kept the pose closer to the sketch than at 0.4).
+   So cn-end is a **trade-off between pose and face preservation**: 0.4 is the default, and it can be changed
+   per run.
 
 5. **Seeds (42–45).** With cn-end 0.4: m1, m4, m5 keep the pose in 4/4 seeds; m3 and m6 in 3–4/4;
    m2 in 0/4.
