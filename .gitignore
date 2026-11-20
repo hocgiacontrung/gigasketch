@@ -8,3 +8,12 @@ __pycache__/
 *.ckpt
 models/
 .cache/
+
+# LaTeX build files
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
+report/*.fdb_latexmk
+report/*.fls

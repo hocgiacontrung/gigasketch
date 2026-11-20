@@ -4,6 +4,8 @@ Turn rough hand-drawn sketches into polished images while keeping their structur
 The default style turns simple stick-figure / meme sketches into dramatic, black-and-white "gigachad"
 photos.
 
+**Demo video:** [GigaSketch web UI on YouTube](https://www.youtube.com/watch?v=Wjf-yhh8tH8)
+
 ![m5: sketch, control map, 4 seeds](outputs/m5/m5_gigachad_s1.0_e0.4_g7.5_seeds42-43-44-45_grid.png)
 
 ## How it works
@@ -74,7 +76,8 @@ python src/app.py
 Then open http://127.0.0.1:7860. Upload a sketch (or draw one in the **Draw** tab), describe what is in it, and
 pick the style, base model and **cn-end** (pose vs. faces) with the slider; the slider jumps to the style's
 default when you change the style. The full prompt and settings are shown under the result. The example sketches
-below the form load the prompts used in this README.
+below the form load the prompts used in this README. See the [demo video](https://www.youtube.com/watch?v=Wjf-yhh8tH8)
+for a walkthrough.
 
 ### Command line
 
@@ -152,24 +155,11 @@ cn-end sweeps, ...) are in the git history, commit `d67a549`.
 2. **Prompt describing the action.** Without it, SD does not know what the lines mean (m2's motion lines became
    objects). The template keeps style and quality tags fixed, so only the content changes between sketches.
 3. **Negative prompt** (`helmet, mask, hat, covered face`). On its own it did **not** fix the helmet heads.
-4. **ControlNet end (`--cn-end` 1.0 / 0.8 / 0.7 / 0.6 / 0.5 / 0.4).** 1.0 to 0.6 give almost the same image: the
-   layout, heads included, is decided in roughly the first half of the steps. Everything changes between 0.5 and
-   0.4. At 0.4 the heads become real faces (m3, m6), but pose details are lost (m3's hand on the cheek and kicked
-   leg, m4's recoiling victim turns away). There is no single best value per sketch: m4 looks best at 0.5, m6 only
-   works at 0.4, m1 and m5 work everywhere. The helmets at high cn-end also depend on the seed (for m3 at 1.0, only
-   seed 42 of 42–45 gave helmets, and the other seeds kept the pose closer to the sketch than at 0.4).
-   So cn-end is a **trade-off between pose and face preservation**: 0.4 is the default, and it can be changed
-   per run.
-
-5. **Seeds (42–45).** With cn-end 0.4: m1, m4, m5 keep the pose in 4/4 seeds; m3 and m6 in 3–4/4;
-   m2 in 0/4.
-6. **Redrawing the sketches.** Earlier versions of m3/m4 with oversized heads and grid-like teeth failed. Redrawn
-   as clean full-body line art (like m5), the poses came through almost perfectly.
-
+4. **ControlNet end (`--cn-end` 1.0 / 0.8 / 0.7 / 0.6 / 0.5 / 0.4).** 1.0 to 0.6 give almost the same image. But at 0.4 the heads become real faces (m3, m6), but pose details are lost. There is no single best value per sketch: m4 looks best at 0.5, m6 only works at 0.4, m1 and m5 work everywhere. The helmets at high cn-end also depend on the seed (for m3 at 1.0, only seed 42 of 42–45 gave helmets). So cn-end is a **trade-off between pose and face preservation**: 0.4 is the default, and it can be changed per run.
 7. **Base model (`sd15` vs `realistic`).** Realistic Vision 5.1 is a community fine-tune of SD 1.5 on photos,
    so it works with the same ControlNet. It gave more natural skin, lighting and anatomy on the group sketch (m6),
    but on m3 one of the two people disappeared in both seeds, and on m4 it added face paint and colored hair.
-   SD 1.5 stays the default; `--model realistic` is an option.
+   So SD 1.5 is the default; `--model realistic` is an option.
 
 ### Limitations
 
