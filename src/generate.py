@@ -15,10 +15,18 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
-from diffusers import ControlNetModel, StableDiffusionControlNetPipeline, UniPCMultistepScheduler
+from diffusers import AutoencoderKL, ControlNetModel, StableDiffusionControlNetPipeline, UniPCMultistepScheduler
 
-SD_MODEL = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 CONTROLNET_MODEL = "lllyasviel/control_v11p_sd15_scribble"
+
+# Base models: name -> (SD 1.5-compatible checkpoint, optional replacement VAE).
+# All share the SD 1.5 architecture, so the same Scribble ControlNet works with each of them.
+MODELS = {
+    "sd15": ("stable-diffusion-v1-5/stable-diffusion-v1-5", None),
+    # Community fine-tune of SD 1.5 on realistic photos; its author recommends the ft-MSE VAE.
+    "realistic": ("SG161222/Realistic_Vision_V5.1_noVAE", "stabilityai/sd-vae-ft-mse"),
+}
+DEFAULT_MODEL = "sd15"
 
 # ---------------------------------------------------------------------------
 # 0. Prompt template: user content + style preset + quality tags
@@ -52,8 +60,13 @@ STYLES = {
         "comic book style, bold ink outlines, halftone shading, dynamic",
         "photo, realistic, 3d render",
     ),
-    "none": ("", ""),  # raw prompt, only quality tags added
+    "custom": ("", ""),  # no preset: the user writes the style in the prompt; only quality tags added
 }
+
+# Default cn-end per style. In photo styles, round cartoon heads turn into helmets/bowls unless ControlNet stops
+# early (0.4). Drawn styles (anime, comic) keep round heads as heads, and stopping early only loses the pose
+# (e.g. m5's jumping man disappears at 0.4), so ControlNet stays on for the whole run.
+STYLE_CN_END = {"gigachad": 0.4, "photo": 0.4, "anime": 1.0, "comic": 1.0, "custom": 0.4}
 
 
 def build_prompt(content: str, style: str) -> tuple[str, str]:
@@ -67,9 +80,14 @@ def build_prompt(content: str, style: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # 1. Preprocessing: messy photo of a sketch -> clean white-lines-on-black map
 # ---------------------------------------------------------------------------
-def prepare_sketch(path: Path, max_side: int = 512) -> tuple[Image.Image, Image.Image]:
-    """Returns (resized original, control image for ControlNet)."""
-    img = Image.open(path).convert("RGB")
+def prepare_sketch(sketch: Path | Image.Image, max_side: int = 512) -> tuple[Image.Image, Image.Image]:
+    """Takes a file path or an image. Returns (resized original, control image for ControlNet)."""
+    img = sketch if isinstance(sketch, Image.Image) else Image.open(sketch)
+    if img.mode in ("RGBA", "LA", "P"):  # transparent background (e.g. drawn in the UI) -> white paper
+        img = img.convert("RGBA")
+        white = Image.new("RGBA", img.size, "white")
+        img = Image.alpha_composite(white, img)
+    img = img.convert("RGB")
 
     # Resize so the longest side is `max_side`; SD needs width/height divisible by 8.
     scale = max_side / max(img.size)
@@ -97,13 +115,18 @@ def prepare_sketch(path: Path, max_side: int = 512) -> tuple[Image.Image, Image.
 # ---------------------------------------------------------------------------
 # 2. Model loading
 # ---------------------------------------------------------------------------
-def load_pipeline() -> StableDiffusionControlNetPipeline:
+def load_pipeline(model: str = DEFAULT_MODEL) -> StableDiffusionControlNetPipeline:
+    sd_model, vae_model = MODELS[model]
     controlnet = ControlNetModel.from_pretrained(CONTROLNET_MODEL, torch_dtype=torch.float16)
+    extra = {}
+    if vae_model:
+        extra["vae"] = AutoencoderKL.from_pretrained(vae_model, torch_dtype=torch.float16)
     pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        SD_MODEL,
+        sd_model,
         controlnet=controlnet,
         torch_dtype=torch.float16,
         safety_checker=None,  # avoids false positives (e.g. shirtless people -> black image)
+        **extra,
     )
     # UniPC gives good results in ~20 steps (default scheduler needs ~50).
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -153,21 +176,24 @@ def main():
     p = argparse.ArgumentParser(description="Sketch -> image with SD 1.5 + ControlNet Scribble")
     p.add_argument("--sketch", required=True, type=Path)
     p.add_argument("--prompt", required=True, help="what is in the sketch, e.g. 'man slapping another man'")
+    p.add_argument("--model", default=DEFAULT_MODEL, choices=MODELS, help="base model (see MODELS)")
     p.add_argument("--style", default="gigachad", choices=STYLES, help="style preset added to the prompt")
     p.add_argument("--negative", default=None, help="override the negative prompt entirely")
     p.add_argument("--scale", type=float, default=1.0, help="ControlNet strength (sketch adherence)")
     # cn-end is a trade-off between pose and face preservation:
     # high values follow the pose closely but round cartoon heads can become helmets/bowls;
-    # below 0.5 heads become real faces, but the pose is followed less closely. 0.4 = default.
-    p.add_argument("--cn-end", type=float, default=0.4,
+    # below 0.5 heads become real faces, but the pose is followed less closely. Default per style.
+    p.add_argument("--cn-end", type=float, default=None,
                    help="fraction of steps where ControlNet is active (1.0 = whole run; 0.4 = pose fixed "
-                        "early, free details at the end)")
+                        "early, free details at the end). Default depends on the style (STYLE_CN_END)")
     p.add_argument("--guidance", type=float, default=7.5, help="CFG scale (prompt adherence)")
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--seeds", "--seed", type=int, nargs="+", default=[42],
                    help="one or more seeds, e.g. --seeds 42 43 44 (model is loaded once)")
     p.add_argument("--out", type=Path, default=Path("outputs"), help="results go to <out>/<sketch name>/")
     args = p.parse_args()
+    if args.cn_end is None:
+        args.cn_end = STYLE_CN_END[args.style]
 
     prompt, negative = build_prompt(args.prompt, args.style)
     if args.negative is not None:
@@ -176,11 +202,12 @@ def main():
     print(f"Negative: {negative}")
 
     original, control = prepare_sketch(args.sketch)
-    pipe = load_pipeline()
+    pipe = load_pipeline(args.model)
 
     out_dir = args.out / args.sketch.stem  # one folder per sketch, e.g. outputs/m1/
     out_dir.mkdir(parents=True, exist_ok=True)
-    base = f"{args.sketch.stem}_{args.style}_s{args.scale}_e{args.cn_end}_g{args.guidance}"
+    model_tag = "" if args.model == DEFAULT_MODEL else f"_{args.model}"  # default keeps the old file names
+    base = f"{args.sketch.stem}{model_tag}_{args.style}_s{args.scale}_e{args.cn_end}_g{args.guidance}"
 
     results = []
     for seed in args.seeds:

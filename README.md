@@ -30,12 +30,13 @@ text prompt  ──► template: content + style preset + quality tags ───
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `--model` | sd15 | Base model: `sd15` (Stable Diffusion 1.5) or `realistic` (Realistic Vision 5.1, see below) |
 | `--scale` | 1.0 | ControlNet strength: how strictly the sketch lines are followed |
-| `--cn-end` | **0.4** | ControlNet is only active during the first 40% of the steps (`control_guidance_end`) |
+| `--cn-end` | **0.4** / 1.0 | Fraction of the steps during which ControlNet is active (`control_guidance_end`). Default per style: 0.4 for `gigachad`, `photo`, `custom`; 1.0 for `anime`, `comic` |
 | `--guidance` | 7.5 | Classifier-free guidance: how strongly the prompt is followed |
 | `--steps` | 20 | Denoising steps (UniPC) |
 | `--seeds` | 42 | One or more seeds |
-| `--style` | gigachad | Style preset: `gigachad`, `photo`, `anime`, `comic`, `none` |
+| `--style` | gigachad | Style preset: `gigachad`, `photo`, `anime`, `comic`, `custom` (no preset: write the style yourself in the prompt) |
 
 **`--cn-end` is a trade-off between pose and face preservation.** These sketches have big, empty round heads.
 With ControlNet active for the whole run, the pose is followed closely, but SD often draws the heads literally as
@@ -43,6 +44,8 @@ round objects (helmets, bowls, glass spheres). Stable Diffusion decides large sh
 in the late steps, so stopping ControlNet early leaves the last steps free to draw real faces, at the cost of a
 looser pose. 0.4 is the default because it is the highest value where the heads reliably become faces; set a
 higher value (e.g. `--cn-end 0.5` or `1.0`) when the pose matters more (see [Experiments](#experiments)).
+In drawn styles (`anime`, `comic`) round heads are fine, and stopping early only loses the pose (m5's jumping man
+disappears at 0.4), so their default is 1.0.
 
 ## Setup
 
@@ -62,6 +65,19 @@ The model weights (~5 GB) are downloaded from Hugging Face automatically on the 
 
 ## Usage
 
+### Web UI
+
+```bash
+python src/app.py
+```
+
+Then open http://127.0.0.1:7860. Upload a sketch (or draw one in the **Draw** tab), describe what is in it, and
+pick the style, base model and **cn-end** (pose vs. faces) with the slider; the slider jumps to the style's
+default when you change the style. The full prompt and settings are shown under the result. The example sketches
+below the form load the prompts used in this README.
+
+### Command line
+
 Run from the repo root:
 
 ```bash
@@ -73,6 +89,9 @@ python src/generate.py --sketch sketches/m4.png --prompt "..." --seeds 42 43 44 
 
 # another style, other settings
 python src/generate.py --sketch sketches/m5.jpg --prompt "..." --style anime --scale 0.8 --cn-end 1.0
+
+# photoreal base model
+python src/generate.py --sketch sketches/m6.png --prompt "..." --model realistic
 ```
 
 The full prompt and negative prompt are printed on every run. Results go to `outputs/<sketch name>/`:
@@ -147,6 +166,11 @@ cn-end sweeps, ...) are in the git history, commit `d67a549`.
 6. **Redrawing the sketches.** Earlier versions of m3/m4 with oversized heads and grid-like teeth failed. Redrawn
    as clean full-body line art (like m5), the poses came through almost perfectly.
 
+7. **Base model (`sd15` vs `realistic`).** Realistic Vision 5.1 is a community fine-tune of SD 1.5 on photos,
+   so it works with the same ControlNet. It gave more natural skin, lighting and anatomy on the group sketch (m6),
+   but on m3 one of the two people disappeared in both seeds, and on m4 it added face paint and colored hair.
+   SD 1.5 stays the default; `--model realistic` is an option.
+
 ### Limitations
 
 - **Messy sketches with symbols** (m2): motion lines, impact stars and "!" marks are drawn as real objects, and the
@@ -155,7 +179,9 @@ cn-end sweeps, ...) are in the git history, commit `d67a549`.
 - **Pose vs. face trade-off:** a lower `--cn-end` gives real faces instead of round objects, but follows the pose
   less closely; a higher one keeps the pose but can turn round heads into objects. No single value is best for
   every sketch and seed.
-- SD 1.5 works best around 512 px; small sketches (m1 is 241×209) are upscaled first.
+- SD 1.5 works best around 512 px; small sketches (m1 is 241×209) are upscaled first. Small faces (a few dozen
+  pixels) look smeared, and the CLIP text encoder (77 tokens) handles relations between several people poorly.
+  Larger models (SDXL, Flux, DALL·E) would do better but need more VRAM / are not open.
 
 ## Project structure
 
@@ -163,6 +189,7 @@ cn-end sweeps, ...) are in the git history, commit `d67a549`.
 sketches/      input sketches (m1–m6)
 src/
   generate.py  preprocessing, prompt template, pipeline, CLI
+  app.py       Gradio web UI (uses generate.py)
 outputs/       results, one folder per sketch
 ```
 
@@ -172,10 +199,12 @@ outputs/       results, one folder per sketch
   ; Rombach et al., *High-Resolution Image Synthesis with Latent Diffusion Models*, CVPR 2022.
 - **ControlNet v1.1 Scribble**: [`lllyasviel/control_v11p_sd15_scribble`](https://huggingface.co/lllyasviel/control_v11p_sd15_scribble)
   ; Zhang, Rao & Agrawala, *Adding Conditional Control to Text-to-Image Diffusion Models*, ICCV 2023.
+- **Realistic Vision 5.1** (optional base model): [`SG161222/Realistic_Vision_V5.1_noVAE`](https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE),
+  CreativeML OpenRAIL-M, with the VAE [`stabilityai/sd-vae-ft-mse`](https://huggingface.co/stabilityai/sd-vae-ft-mse).
 - **UniPC scheduler**: Zhao et al., *UniPC: A Unified Predictor-Corrector Framework for Fast Sampling of Diffusion Models*, NeurIPS 2023.
 - **Libraries**: [🤗 Diffusers](https://github.com/huggingface/diffusers), [🤗 Transformers](https://github.com/huggingface/transformers),
   [Accelerate](https://github.com/huggingface/accelerate), [PyTorch](https://pytorch.org/),
-  [OpenCV](https://opencv.org/), [Pillow](https://python-pillow.org/).
+  [OpenCV](https://opencv.org/), [Pillow](https://python-pillow.org/), [Gradio](https://www.gradio.app/).
 
 ### Sketches
 
