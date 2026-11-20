@@ -2,7 +2,7 @@
 GigaSketch - turn a rough sketch into an image with Stable Diffusion 1.5 + ControlNet (Scribble).
 
 Usage (from the repo root):
-    python src/generate.py --sketch sketches/meme2.jpg --prompt "man slapping another man" --style gigachad
+    python src/generate.py --sketch sketches/m2.jpg --prompt "man slapping another man" --style gigachad
 
 The final prompt is built from a template: "{your content}, {style preset}, {quality tags}".
 --prompt only needs to say WHAT is in the sketch (subjects + action); the style comes from --style.
@@ -14,7 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from diffusers import ControlNetModel, StableDiffusionControlNetPipeline, UniPCMultistepScheduler
 
 SD_MODEL = "stable-diffusion-v1-5/stable-diffusion-v1-5"
@@ -27,7 +27,9 @@ QUALITY_TAGS = "highly detailed, sharp focus, best quality"
 
 BASE_NEGATIVE = (
     "blurry, low quality, deformed, disfigured, bad anatomy, extra limbs, "
-    "extra fingers, mutated hands, watermark, text"
+    "extra fingers, mutated hands, watermark, text, "
+    # Big empty round cartoon heads tend to be rendered as objects covering the face.
+    "helmet, mask, hat, covered face"
 )
 
 # Each preset = (style description, extra negative terms).
@@ -81,7 +83,7 @@ def prepare_sketch(path: Path, max_side: int = 512) -> tuple[Image.Image, Image.
     # Adaptive threshold handles uneven lighting (gray paper, shadows).
     # THRESH_BINARY_INV -> lines become white, background black (what Scribble expects).
     # blockSize must be larger than the stroke width, otherwise thick strokes get hollowed
-    # out into double outlines (15 did that on meme1; 51 keeps strokes solid).
+    # out into double outlines (15 did that on m1; 51 keeps strokes solid).
     lines = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, blockSize=51, C=15
     )
@@ -111,11 +113,20 @@ def load_pipeline() -> StableDiffusionControlNetPipeline:
 # ---------------------------------------------------------------------------
 # 3. Generation + saving
 # ---------------------------------------------------------------------------
-def side_by_side(*images: Image.Image) -> Image.Image:
+def side_by_side(*images: Image.Image, labels: list[str] | None = None) -> Image.Image:
+    """Puts images in one row (all resized to the first one's size), with an optional label on each panel."""
     w, h = images[0].size
     canvas = Image.new("RGB", (w * len(images), h), "white")
     for i, im in enumerate(images):
         canvas.paste(im.resize((w, h)), (i * w, 0))
+    if labels:
+        draw = ImageDraw.Draw(canvas)
+        font = ImageFont.load_default(size=max(16, h // 20))
+        for i, text in enumerate(labels):
+            if text:
+                x0, y0, x1, y1 = draw.textbbox((i * w + 8, 8), text, font=font)
+                draw.rectangle((x0 - 4, y0 - 4, x1 + 4, y1 + 4), fill="black")
+                draw.text((i * w + 8, 8), text, fill="white", font=font)
     return canvas
 
 
@@ -126,9 +137,16 @@ def main():
     p.add_argument("--style", default="gigachad", choices=STYLES, help="style preset added to the prompt")
     p.add_argument("--negative", default=None, help="override the negative prompt entirely")
     p.add_argument("--scale", type=float, default=1.0, help="ControlNet strength (sketch adherence)")
+    # cn-end is a trade-off between pose and face preservation (see the cn-end sweep):
+    # high values follow the pose closely but round cartoon heads can become helmets/bowls;
+    # below 0.5 heads become real faces, but the pose is followed less closely. 0.4 = default.
+    p.add_argument("--cn-end", type=float, nargs="+", default=[0.4],
+                   help="fraction of steps where ControlNet is active (1.0 = whole run; 0.4 = pose fixed "
+                        "early, free details at the end). Several values -> one comparison image per seed")
     p.add_argument("--guidance", type=float, default=7.5, help="CFG scale (prompt adherence)")
     p.add_argument("--steps", type=int, default=20)
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seeds", "--seed", type=int, nargs="+", default=[42],
+                   help="one or more seeds, e.g. --seeds 42 43 44 (model is loaded once)")
     p.add_argument("--out", type=Path, default=Path("outputs"), help="results go to <out>/<sketch name>/")
     args = p.parse_args()
 
@@ -141,25 +159,50 @@ def main():
     original, control = prepare_sketch(args.sketch)
     pipe = load_pipeline()
 
-    generator = torch.Generator("cuda").manual_seed(args.seed)
-    result = pipe(
-        prompt=prompt,
-        negative_prompt=negative,
-        image=control,
-        controlnet_conditioning_scale=args.scale,
-        guidance_scale=args.guidance,
-        num_inference_steps=args.steps,
-        generator=generator,
-        width=control.width,
-        height=control.height,
-    ).images[0]
-
     out_dir = args.out / args.sketch.stem  # one folder per sketch, e.g. outputs/m1/
     out_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{args.sketch.stem}_{args.style}_s{args.scale}_g{args.guidance}_seed{args.seed}"
-    result.save(out_dir / f"{name}.png")
-    side_by_side(original, control, result).save(out_dir / f"{name}_compare.png")
-    print(f"Saved -> {out_dir / name}.png (+ _compare.png)")
+    prefix = f"{args.sketch.stem}_{args.style}_s{args.scale}"
+
+    results = {}  # (cn_end, seed) -> image
+    for cn_end in args.cn_end:
+        for seed in args.seeds:
+            generator = torch.Generator("cuda").manual_seed(seed)
+            result = pipe(
+                prompt=prompt,
+                negative_prompt=negative,
+                image=control,
+                controlnet_conditioning_scale=args.scale,
+                control_guidance_end=cn_end,
+                guidance_scale=args.guidance,
+                num_inference_steps=args.steps,
+                generator=generator,
+                width=control.width,
+                height=control.height,
+            ).images[0]
+            results[cn_end, seed] = result
+
+            name = f"{prefix}_e{cn_end}_g{args.guidance}_seed{seed}"
+            result.save(out_dir / f"{name}.png")
+            side_by_side(original, control, result).save(out_dir / f"{name}_compare.png")
+            print(f"Saved -> {out_dir / name}.png (+ _compare.png)")
+
+    # Comparison rows for the report: sketch | control map | one result per seed (or per cn-end).
+    if len(args.seeds) > 1:
+        seeds_tag = "-".join(map(str, args.seeds))
+        for cn_end in args.cn_end:
+            row = [results[cn_end, s] for s in args.seeds]
+            path = out_dir / f"{prefix}_e{cn_end}_g{args.guidance}_seeds{seeds_tag}_grid.png"
+            side_by_side(original, control, *row,
+                         labels=["sketch", "control", *(f"seed {s}" for s in args.seeds)]).save(path)
+            print(f"Saved -> {path}")
+    if len(args.cn_end) > 1:
+        ends_tag = "-".join(map(str, args.cn_end))
+        for seed in args.seeds:
+            row = [results[e, seed] for e in args.cn_end]
+            path = out_dir / f"{prefix}_e{ends_tag}_g{args.guidance}_seed{seed}_cnsweep.png"
+            side_by_side(original, control, *row,
+                         labels=["sketch", "control", *(f"cn-end {e}" for e in args.cn_end)]).save(path)
+            print(f"Saved -> {path}")
 
 
 if __name__ == "__main__":
